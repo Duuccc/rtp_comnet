@@ -2,10 +2,10 @@ import socket
 import threading
 import time
 import wave
-from rtp.packet import RTPPacket
+from rtp.core.packet import RTPPacket
 from collections import defaultdict
-from .fec import FECHandler
-from .retransmission import RetransmissionHandler
+from rtp.utils.fec import FECHandler
+from rtp.utils.retransmission import RetransmissionHandler
 
 class RTPReceiver:
     def __init__(self, bind_ip, bind_port, expected_ssrc=None, buffer_size=1000, group_size=4):

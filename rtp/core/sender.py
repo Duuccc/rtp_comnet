@@ -3,9 +3,9 @@ import threading
 import time
 import random
 import wave
-from rtp.packet import RTPPacket
-from .fec import FECHandler
-from .retransmission import RetransmissionHandler
+from rtp.core.packet import RTPPacket
+from rtp.utils.fec import FECHandler
+from rtp.utils.retransmission import RetransmissionHandler
 
 class RTPSender:
     def __init__(self, dest_ip, dest_port, payload_type=RTPPacket.PT_AUDIO, ssrc=None, initial_seq_num=0, group_size=4):
