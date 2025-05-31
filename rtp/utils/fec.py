@@ -22,31 +22,34 @@ class FECHandler:
         return None
         
     def _generate_fec_packet(self):
-        """Generate FEC packet using XOR of all packets in group"""
-        # Initialize FEC data with first packet
-        fec_data = bytearray(self.packet_buffer[0].encode())
+        """Generate FEC packet for current group"""
+        if len(self.packet_buffer) < self.group_size:
+            return None
+            
+        # Get sequence numbers of packets in group
+        seq_nums = [p.seq_num for p in self.packet_buffer]
         
-        # XOR with remaining packets
+        # Pack sequence numbers into metadata
+        metadata = struct.pack('!' + 'H' * len(seq_nums), *seq_nums)
+        
+        # XOR all payloads together
+        fec_payload = self.packet_buffer[0].payload
         for packet in self.packet_buffer[1:]:
-            packet_data = packet.encode()
-            for i in range(len(fec_data)):
-                if i < len(packet_data):
-                    fec_data[i] ^= packet_data[i]
+            fec_payload = bytes(a ^ b for a, b in zip(fec_payload, packet.payload))
         
         # Create FEC packet
-        seq_nums = [p.seq_num for p in self.packet_buffer]
-        metadata = struct.pack('!H' * len(seq_nums), *seq_nums)
-        
-        self.fec_packet = RTPPacket(
+        fec_packet = RTPPacket(
             payload_type=RTPPacket.PT_FEC,
-            seq_num=max(seq_nums) + 1,
+            seq_num=self.packet_buffer[-1].seq_num + 1,
             timestamp=self.packet_buffer[-1].timestamp,
             ssrc=self.packet_buffer[0].ssrc,
-            payload=metadata + bytes(fec_data)
+            payload=metadata + fec_payload
         )
         
-        # Clear buffer
+        # Clear current group
         self.packet_buffer = []
+        
+        return fec_packet
         
     def recover_packet(self, fec_packet, available_packets):
         """Recover a lost packet using FEC data

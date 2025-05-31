@@ -1,103 +1,94 @@
 import time
 import threading
 import random
-from rtp.core.packet import RTPPacket
+from queue import Queue
 from rtp.core.sender import RTPSender
 from rtp.core.receiver import RTPReceiver
-from rtp.utils.retransmission import RetransmissionHandler
+from rtp.core.packet import RTPPacket
 
-def print_packet_status(seq_num, status, color='white'):
-    """Print packet status with color"""
+def print_packet_status(seq_num, status):
+    """Print packet status with color coding"""
     colors = {
-        'white': '\033[0m',
-        'red': '\033[91m',
-        'green': '\033[92m',
-        'yellow': '\033[93m',
-        'blue': '\033[94m'
+        'RECEIVED': '\033[92m',  # Green
+        'LOST': '\033[91m',      # Red
+        'NACK': '\033[93m',      # Yellow
+        'RETRANSMITTED': '\033[94m'  # Blue
     }
-    print(f"{colors[color]}[{seq_num:4d}] {status}{colors['white']}")
+    reset = '\033[0m'
+    print(f"{colors[status]}[{seq_num:04d}] {status}{reset}")
 
-def simulate_network(sender, receiver, loss_rate=0.2, delay=0.1):
-    """Simulate network with packet loss and delay"""
-    while True:
-        try:
-            # Get next packet from sender's buffer
-            if not sender.packet_buffer:
-                time.sleep(0.1)
-                continue
-                
-            # Get the next packet
-            seq_num = min(sender.packet_buffer.keys())
-            packet = sender.packet_buffer[seq_num]
-            del sender.packet_buffer[seq_num]
-            
-            # Simulate packet loss
+def sender_thread_func(sender, packet_queue, num_packets, interval):
+    for i in range(num_packets):
+        payload = f"Test packet {i}".encode()
+        packet = sender.create_packet(payload)
+        # Store for retransmission
+        sender.rtx_handler.add_packet(packet)
+        packet_queue.put(packet)
+        time.sleep(interval)
+
+def network_simulation(packet_queue, sender, receiver, loss_rate, delay, nack_queue, num_packets):
+    delivered = set()
+    while len(delivered) < num_packets:
+        if not packet_queue.empty():
+            packet = packet_queue.get()
             if random.random() < loss_rate:
-                print_packet_status(packet.seq_num, "LOST", 'red')
-                continue
-                
-            # Simulate network delay
+                print_packet_status(packet.seq_num, 'LOST')
+                # Simulate loss, receiver will NACK
+            else:
+                print_packet_status(packet.seq_num, 'RECEIVED')
+                receiver.process_packet(packet)
+                delivered.add(packet.seq_num)
             time.sleep(delay)
-            
-            # Forward packet to receiver
-            print_packet_status(packet.seq_num, "RECEIVED", 'green')
-            receiver.process_packet(packet)
-            
-            # Check for NACK
-            nack = receiver.request_retransmission()
-            if nack:
-                missing_seqs = nack.get_nack_sequence_numbers()
-                for seq in missing_seqs:
-                    print_packet_status(seq, "NACK SENT", 'yellow')
-                # Handle NACK and retransmit
-                rtx_packets = sender.handle_nack(nack)
-                for rtx in rtx_packets:
-                    print_packet_status(rtx.seq_num, "RETRANSMITTED", 'blue')
-                    time.sleep(delay)
-                    receiver.process_packet(rtx)
-                    
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            print(f"Error in network simulation: {e}")
-            break
+        # Handle NACKs
+        while not nack_queue.empty():
+            nack = nack_queue.get()
+            for seq in nack.get_nack_sequence_numbers():
+                print_packet_status(seq, 'NACK')
+            # Use sender's rtx_handler to get retransmission packets
+            rtx_packets = sender.rtx_handler.handle_nack(nack)
+            for rtx in rtx_packets:
+                print_packet_status(rtx.seq_num, 'RETRANSMITTED')
+                receiver.process_packet(rtx)
+                delivered.add(rtx.seq_num)
+            time.sleep(delay)
+
+def receiver_nack_thread(receiver, nack_queue):
+    while True:
+        nack = receiver.request_retransmission()
+        if nack:
+            nack_queue.put(nack)
+        time.sleep(0.05)
 
 def main():
-    # Create sender and receiver
-    sender = RTPSender("127.0.0.1", 5000)
-    receiver = RTPReceiver("127.0.0.1", 5000)
-    
-    # Create test data
-    data_chunks = [f"Chunk {i}".encode() for i in range(20)]
-    
-    print("\n=== RTP NACK and Retransmission Demo ===")
+    print("=== RTP NACK and Retransmission Demo ===")
     print("Legend:")
     print("  [XXXX] RECEIVED    - Packet successfully received")
     print("  [XXXX] LOST        - Packet lost in network")
-    print("  [XXXX] NACK SENT   - NACK packet sent for missing packet")
-    print("  [XXXX] RETRANSMITTED - Packet retransmitted after NACK")
-    print("\nStarting simulation...\n")
-    
-    # Start network simulation in a separate thread
-    network_thread = threading.Thread(
-        target=simulate_network,
-        args=(sender, receiver, 0.2, 0.1)
-    )
-    network_thread.daemon = True
-    network_thread.start()
-    
-    # Send packets
-    for chunk in data_chunks:
-        try:
-            packets = sender.send_audio(chunk)
-            time.sleep(0.2)  # Delay between chunks
-        except Exception as e:
-            print(f"Error sending packet: {e}")
-            break
-    
-    # Wait for network simulation to complete
-    network_thread.join(timeout=5)
-    
+    print("  [XXXX] NACK        - NACK packet sent for missing packet")
+    print("  [XXXX] RETRANSMITTED - Packet retransmitted after NACK\n")
+
+    num_packets = 30
+    loss_rate = 0.2
+    delay = 0.05
+    interval = 0.05
+
+    sender = RTPSender("127.0.0.1", 5000)
+    receiver = RTPReceiver("127.0.0.1", 5000)
+    packet_queue = Queue()
+    nack_queue = Queue()
+
+    # Start sender thread
+    t_sender = threading.Thread(target=sender_thread_func, args=(sender, packet_queue, num_packets, interval))
+    t_sender.start()
+
+    # Start receiver NACK thread
+    t_nack = threading.Thread(target=receiver_nack_thread, args=(receiver, nack_queue), daemon=True)
+    t_nack.start()
+
+    # Start network simulation
+    network_simulation(packet_queue, sender, receiver, loss_rate, delay, nack_queue, num_packets)
+
+    t_sender.join()
     print("\nSimulation completed!")
 
 if __name__ == "__main__":
